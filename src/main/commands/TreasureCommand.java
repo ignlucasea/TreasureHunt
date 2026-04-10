@@ -1,39 +1,184 @@
-package com.spaleforce.treasurehunt.commands;
+package com.treasurehunt.commands;
 
-import com.spaleforce.treasurehunt.TreasureHunt;
-import com.spaleforce.treasurehunt.database.DatabaseManager;
-import com.spaleforce.treasurehunt.gui.TreasureGUI;
-import com.spaleforce.treasurehunt.managers.SelectionManager;
-import com.spaleforce.treasurehunt.models.Treasure;
-import com.spaleforce.treasurehunt.models.TreasureCompletion;
+import com.treasurehunt.TreasureHuntPlugin;
+import com.treasurehunt.gui.TreasureGUI;
+import com.treasurehunt.managers.TreasureManager;
+import com.treasurehunt.models.Treasure;
+import org.bukkit.Bukkit;
+import org.bukkit.ChatColor;
 import org.bukkit.command.Command;
 import org.bukkit.command.CommandExecutor;
 import org.bukkit.command.CommandSender;
-import org.bukkit.command.TabCompleter;
 import org.bukkit.entity.Player;
 
-import java.text.SimpleDateFormat;
 import java.util.*;
 import java.util.stream.Collectors;
 
-public class TreasureCommand implements CommandExecutor, TabCompleter {
-    
-    private final TreasureHunt plugin;
-    private final DatabaseManager databaseManager;
-    private final SelectionManager selectionManager;
+public class TreasureCommand implements CommandExecutor {
+
+    private final TreasureHuntPlugin plugin;
+    private final TreasureManager treasureManager;
     private final TreasureGUI treasureGUI;
-    private final SimpleDateFormat dateFormat;
-    
-    public TreasureCommand(TreasureHunt plugin, DatabaseManager databaseManager, 
-                          SelectionManager selectionManager, TreasureGUI treasureGUI) {
+
+    public TreasureCommand(TreasureHuntPlugin plugin, TreasureManager treasureManager, TreasureGUI treasureGUI) {
         this.plugin = plugin;
-        this.databaseManager = databaseManager;
-        this.selectionManager = selectionManager;
+        this.treasureManager = treasureManager;
         this.treasureGUI = treasureGUI;
-        this.dateFormat = new SimpleDateFormat("yyyy-MM-dd HH:mm");
     }
-    
+
     @Override
+    public boolean onCommand(CommandSender sender, Command command, String label, String[] args) {
+        if (!sender.hasPermission("treasurehunt.admin")) {
+            sender.sendMessage(colorize(getPrefix() + getMessage("no-permission")));
+            return true;
+        }
+
+        if (args.length == 0) {
+            sender.sendMessage(colorize(getPrefix() + getMessage("invalid-usage")));
+            return true;
+        }
+
+        String subCommand = args[0].toLowerCase();
+
+        switch (subCommand) {
+            case "create":
+                return handleCreate(sender, args);
+            case "delete":
+                return handleDelete(sender, args);
+            case "completed":
+                return handleCompleted(sender, args);
+            case "list":
+                return handleList(sender);
+            case "gui":
+                return handleGui(sender);
+            default:
+                sender.sendMessage(colorize(getPrefix() + getMessage("invalid-usage")));
+                return true;
+        }
+    }
+
+    private boolean handleCreate(CommandSender sender, String[] args) {
+        if (!(sender instanceof Player player)) {
+            sender.sendMessage(colorize(getPrefix() + getMessage("player-only")));
+            return true;
+        }
+
+        if (args.length < 3) {
+            sender.sendMessage(colorize(getPrefix() + "&cUsage: /treasure create <id> <command>"));
+            return true;
+        }
+
+        String treasureId = args[1];
+        // Join remaining args as the command
+        StringBuilder commandBuilder = new StringBuilder();
+        for (int i = 2; i < args.length; i++) {
+            if (i > 2) commandBuilder.append(" ");
+            commandBuilder.append(args[i]);
+        }
+        String cmd = commandBuilder.toString();
+
+        // Check if treasure ID already exists
+        if (treasureManager.getTreasure(treasureId) != null) {
+            sender.sendMessage(colorize(getPrefix() + "&cA treasure with ID '" + treasureId + "' already exists!"));
+            return true;
+        }
+
+        // Set pending creation
+        treasureManager.setPendingCreation(player.getUniqueId(), treasureId, cmd);
+        sender.sendMessage(colorize(getPrefix() + getMessage("select-block")));
+
+        return true;
+    }
+
+    private boolean handleDelete(CommandSender sender, String[] args) {
+        if (args.length < 2) {
+            sender.sendMessage(colorize(getPrefix() + "&cUsage: /treasure delete <id>"));
+            return true;
+        }
+
+        String treasureId = args[1];
+
+        if (treasureManager.deleteTreasure(treasureId)) {
+            sender.sendMessage(colorize(getPrefix() + getMessage("treasure-deleted").replace("%id%", treasureId)));
+        } else {
+            sender.sendMessage(colorize(getPrefix() + getMessage("treasure-not-found").replace("%id%", treasureId)));
+        }
+
+        return true;
+    }
+
+    private boolean handleCompleted(CommandSender sender, String[] args) {
+        if (args.length < 2) {
+            sender.sendMessage(colorize(getPrefix() + "&cUsage: /treasure completed <id>"));
+            return true;
+        }
+
+        String treasureId = args[1];
+        Treasure treasure = treasureManager.getTreasure(treasureId);
+
+        if (treasure == null) {
+            sender.sendMessage(colorize(getPrefix() + getMessage("treasure-not-found").replace("%id%", treasureId)));
+            return true;
+        }
+
+        List<UUID> completedPlayers = treasureManager.getCompletedPlayers(treasureId);
+
+        sender.sendMessage(colorize(getPrefix() + "&6Players who found '" + treasureId + "':"));
+        if (completedPlayers.isEmpty()) {
+            sender.sendMessage(colorize("&7No one has found this treasure yet."));
+        } else {
+            String playerList = completedPlayers.stream()
+                    .map(uuid -> Bukkit.getOfflinePlayer(uuid).getName())
+                    .filter(Objects::nonNull)
+                    .collect(Collectors.joining("&7, &f"));
+            sender.sendMessage(colorize("&f" + playerList));
+            sender.sendMessage(colorize("&7Total: " + completedPlayers.size() + " players"));
+        }
+
+        return true;
+    }
+
+    private boolean handleList(CommandSender sender) {
+        Collection<Treasure> treasures = treasureManager.getAllTreasures();
+
+        if (treasures.isEmpty()) {
+            sender.sendMessage(colorize(getPrefix() + getMessage("no-treasures")));
+            return true;
+        }
+
+        sender.sendMessage(colorize(getPrefix() + "&6Treasure List:"));
+        for (Treasure treasure : treasures) {
+            int completedCount = treasureManager.getCompletedPlayers(treasure.getId()).size();
+            sender.sendMessage(colorize("&7- &f" + treasure.getId() + " &7at &f" + treasure.getLocationString() +
+                    " &7(" + completedCount + " found)"));
+        }
+        sender.sendMessage(colorize("&7Total: " + treasures.size() + " treasures"));
+
+        return true;
+    }
+
+    private boolean handleGui(CommandSender sender) {
+        if (!(sender instanceof Player player)) {
+            sender.sendMessage(colorize(getPrefix() + getMessage("player-only")));
+            return true;
+        }
+
+        treasureGUI.openTreasureListGUI(player, 0);
+        return true;
+    }
+
+    private String colorize(String message) {
+        return ChatColor.translateAlternateColorCodes('&', message);
+    }
+
+    private String getPrefix() {
+        return plugin.getConfig().getString("messages.prefix", "&6[TreasureHunt] &r");
+    }
+
+    private String getMessage(String key) {
+        return plugin.getConfig().getString("messages." + key, "");
+    }
+}
     public boolean onCommand(CommandSender sender, Command command, String label, String[] args) {
         if (!(sender instanceof Player player)) {
             sender.sendMessage(plugin.getMessage("prefix") + "§cOnly players can use this command.");
